@@ -3,7 +3,7 @@ import os, os.path
 import pandas as pd
 
 from abc import ABC, abstractmethod
-from Event_Driven_Backtester.event import MarketEvent
+from Event_Driven_Backtester.Event import MarketEvent
 
 class DataHandler(ABC):
     '''
