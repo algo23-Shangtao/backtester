@@ -24,17 +24,17 @@ class SimulateExecutionHandler(ExecutionHandler):
         self.events = events
 
     def _match_order(self, order):
-        fill_time = datetime.now()
+        fill_time = order.datetime
         symbol = order.symbol
-        price = order.order_info[1]
-        quantity = order.order_info[2] # order_info = tuple([order_type, order_price, order_quantity])
+        price = order.order_price
+        quantity = order.order_quantity # order_info = tuple([order_type, order_price, order_quantity])
         direction = order.direction
-        return tuple([fill_time, symbol, tuple([price, quantity]), direction])
+        return FillEvent(fill_time, symbol, 'success', price, quantity, direction)
 
     def execute_order(self, event): # datetime, symbol, order_info, direction, commission=None
         if event.type == 'ORDER':
             fill = self._match_order(event)
-            self.events.put(FillEvent(fill[0], fill[1], fill[2], fill[3]))
+            self.events.put(fill)
     
     def update_bar(self):
         pass

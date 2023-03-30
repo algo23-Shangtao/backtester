@@ -27,26 +27,32 @@ class BuyAndHoldStrategy(Strategy):
         '''
         self.datahandler = datahandler
         self.portfolio = portfolio
-        self.symbol_list = self.datahandler.symbol_list
         self.events = events
-        self.all_signals = {} # 记录信号
+        self._init_params()
+
+    def _init_params(self):
+        self.symbol_list = self.datahandler.symbol_list
+        self.all_signals = {} # 记录所有时间所有合约的信号 格式: {时间: signals}
+        self.current_signals = [] # 记录当前时间所有合约的信号
     
     def _buy_and_hold_strategy(self, event):
-        signals = []
+        self.current_signals = [] # 清除上一次的信号
         for symbol in self.symbol_list:
+            bar_list = self.datahandler.get_latest_bars(symbol)
+            new_bar = bar_list[-1]
             ## 查看当前仓位@TODO
             current_position = self.portfolio.current_positions[symbol]
-            if current_position[1] == 0.0:
-                signal_time = datetime.now() # DataEvent更新时间 + 处理并产生信号的时间@TODO
+            if current_position.position == 0.0:
+                signal_time = new_bar.datetime   # new_bar更新时间 + 处理并产生信号的时间@TODO
                 signal_type = 'LONG'
                 signal_strength = 1
-                signals.append(tuple([symbol, signal_time, signal_type, signal_strength]))
-        return signals
+                signal = SignalEvent(symbol, signal_time, signal_type, signal_strength)
+                self.current_signals.append(signal)
     
     def generate_signals(self, event):
         if event.type == 'MARKET':
-            signals = self._buy_and_hold_strategy(event)
-            self.all_signals[event] = signals 
-            for signal in signals:
-                self.events.put(SignalEvent(signal[0], signal[1], signal[2], signal[3]))
+            self._buy_and_hold_strategy(event)
+            self.all_signals[event] = self.current_signals # 更新all_signals
+            for signal in self.current_signals:
+                self.events.put(signal)
             

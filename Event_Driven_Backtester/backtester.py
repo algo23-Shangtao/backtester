@@ -12,7 +12,6 @@ class BackTest:
         self.datahandler_cls = datahandler_cls
         self.events = queue.Queue()
         self._initialize_instances()
-        logging.info("BackTest 初始化")
     
     def _initialize_instances(self):
         self.datahandler = self.datahandler_cls(self.events)
