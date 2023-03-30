@@ -1,4 +1,4 @@
-import datetime
+from datetime import datetime
 import numpy as np
 import pandas as pd
 from queue import Queue
@@ -14,183 +14,151 @@ class Portfolio(ABC):
     所有Portfolio的父类
     '''
     @abstractmethod
-    def update_signal(self, event):
+    def generate_order(self, event):
         '''
-        处理SignalEvent
+        接收SignalEvent
         产生OrderEvent
         '''
-        raise NotImplementedError('Should implement update_signal()')
+        raise NotImplementedError('Should implement generate_order()')
     @abstractmethod
     def update_fill(self, event):
         '''
-        根据FillEvent更新当前持仓
+        根据FillEvent更新仓位信息
         '''
         raise NotImplementedError('Should implement update_fill()')
+    @abstractmethod
+    def update_bar(self):
+        '''
+        根据MarketEvent更新仓位信息
+        '''
+        raise NotImplementedError('Should implement update_bar()')
     
 
 class NaivePortfolio(Portfolio):
     '''
     简单的Portfolio class, 以不变的手数下单-即没有risk management & position sizing
     '''
-    def __init__(self, bars, events, start_date, initial_capital=100000):
+    def __init__(self, datahandler, events, initial_capital=100000):
         '''
         bars: 提供行情数据的DataHandler, 如HistoryCSVDataHandler
         events: 事件队列
         '''
-        self.bars = bars
+        self.datahandler = datahandler
         self.events = events
-        self.symbol_list = self.bars.symbol_list
-        self.start_date = start_date
+        self.symbol_list = datahandler.symbol_list
         self.initial_capital = initial_capital
-        #### all_positions: 历史持仓 current_positions: 当前持仓
-        self.all_positions = self.construct_all_positions()
-        self.current_positions = self.construct_current_positions()
-        #### all_holding: 历史净值 current_holding: 当前净值
-        self.all_holdings = self.construct_all_holdings()
-        self.current_holdings = self.construct_current_holdings()
+        self.all_positions = dict() # {datetime : current_positions, ... ,}
+        self.current_positions = dict((key, value) for key, value in [(symbol, tuple([0, 0, 0])) for symbol in self.symbol_list]) # {symbol: (direction, position, market_value), ... ,} 
+        self.all_capital = dict() # {datetime : current_capital}
+        self.current_capital = tuple([0.0, initial_capital]) # tuple([all_market_value, cash])
 
-    def construct_all_positions(self):
-        '''
-        all:
-        开始时间&持仓列表
-        将字典放入一个列表
-        '''
-        d = dict((k,v) for k, v in [(s, 0) for s in self.symbol_list])
-        d['datetime'] = self.start_date
-        return [d]
-    
-    def construct_current_positions(self):
-        '''
-        current:
-        当前持仓列表
-        '''
-        d = dict((k,v) for k, v in [(s, 0) for s in self.symbol_list])
-        return d
-    
-    def construct_all_holdings(self):
-        '''
-        all:
-        开始时间&净值列表&剩余现金&佣金&总净值
-        将字典放入一个列表
-        '''
-        d = dict((k,v) for k, v in [(s, 0.0) for s in self.symbol_list])
-        d['datetime'] = self.start_date
-        d['cash'] = self.initial_capital
-        d['commission'] = 0.0
-        d['total'] = self.initial_capital
-        return [d]
-    def construct_current_holdings(self):
-        '''
-        current:
-        净值列表&剩余现金&佣金&总净值
-        '''
-        d = dict((k,v) for k, v in [(s, 0.0) for s in self.symbol_list])
-        d['cash'] = self.initial_capital
-        d['commission'] = 0.0
-        d['total'] = self.initial_capital
-        return d
-    #### 每次心跳，会传入新行情信息，据此更新Portfolio
-    def update_timeindex(self, event):
-        bars = {}
-        for symbol in self.symbol_list:
-            bars[symbol] = self.bars.get_latest_bars(symbol, N=1)
-        # update all_positions
-        dp = dict((k,v) for k, v in [(s, 0.0) for s in self.symbol_list])
-        dp['datetime'] = bars[self.symbol_list[0]][0][1]
-        for symbol in self.symbol_list:
-            dp[symbol] = self.current_positions[symbol]
-        self.all_positions.append(dp)
-        # update all_holdings
-        dh = dict((k,v) for k, v in [(s, 0.0) for s in self.symbol_list])
-        dh['datetime'] = bars[self.symbol_list[0]][0][1]
-        dh['cash'] = self.current_holdings['cash']
-        dh['commission'] = self.current_holdings['commission']
-        dh['total'] = self.current_holdings['cash']
-        for symbol in self.symbol_list:
-            # 计算当前市值
-            market_value = self.current_positions[symbol] * bars[symbol][0][2]
-            dh[symbol] = market_value
-            dh['total'] += market_value
-        self.all_holdings.append(dh)
-    
-    def update_position_from_fill(self, fill):
-        '''
-        根据成交信息更新仓位
-        fill: FillEvent
-        '''
-        fill_dir = 0
-        if fill.direction == 'LONG':
-            fill_dir = 1
-        if fill.direction == 'SHORT':
-            fill_dir = -1
-        self.current_positions[fill.symbol] += fill_dir * fill.quantity
-    def update_holdings_from_fill(self, fill):
-        '''
-        根据成交信息更新净值 
-        '''
-        fill_dir = 0
-        if fill.direction == 'LONG':
-            fill_dir = 1
-        if fill.direction == 'SHORT':
-            fill_dir = -1
-        fill_cost = self.bars.get_latest_bars(fill.symbol)[0][2] # fill_cost收盘价
-        cost = fill_dir * fill_cost * fill.quantity
-        self.current_holdings[fill.symbol] += cost
-        self.current_holdings['commission'] += fill.commission
-        self.current_holdings['cash'] -= (cost + fill.commission)
-        self.current_holdings['total'] -= (cost + fill.commission)
-
-    def update_fill(self, event):
-        '''
-        FillEvent-执行上面的更新逻辑
-        '''
-        if event.type == 'FILL':
-            self.update_position_from_fill(event)
-            self.update_holdings_from_fill(event)
-
-    def generate_order(self, signal):
+    def _naive_order_generator(self, signal):
         '''
         此处应该有risk management & position sizing
-        简单的buy and hold
         '''
-        order = None
         symbol = signal.symbol
-        direction = signal.signal_type
-        strength = signal.strength
-
-        mkt_quantity = floor(100 * strength) # 默认下单单位为100--此处可以拓展
-        cur_quantity = self.current_positions[symbol]
-        order_type = 'MKT'
-
-        if direction == 'LONG' & cur_quantity == 0:
-            order = OrderEvent(symbol, order_type, mkt_quantity, 'BUY')
-        if direction == 'SHORT' & cur_quantity == 0:
-            order = OrderEvent(symbol, order_type, mkt_quantity, 'SELL')
-        if direction == 'EXIT' & cur_quantity > 0:
-            order = OrderEvent(symbol, order_type, abs(cur_quantity), 'SELL')
-        if direction == 'EXIT' & cur_quantity < 0:
-            order = OrderEvent(symbol, order_type, abs(cur_quantity), 'BUY')    
-        return order    
+        current_position = self.current_positions[symbol]
+        new_bar = self.datahandler.get_latest_bars(symbol)[0] # tuple(symbol, datetime, close)
+        last_price = new_bar[2] 
+        if len(current_position) == 0: # 未持仓
+            order_type = 'limit_order'
+            order_price = last_price
+            order_quantity = floor(100 * signal.strength)
+            direction = 1 if signal.signal_type == 'LONG' else -1
+            order_info = tuple([order_type, order_price, order_quantity]) # 开仓
+        elif current_position[0] == signal.signal_type: # 信号方向与持仓方向一致
+            order_type = None
+            order_price = last_price
+            order_quantity = None
+            direction = 0
+            order_info = tuple([order_type, order_price, order_quantity])
+        else: # 信号方向与持仓方向相反
+            order_type = 'limit_order'
+            order_price = last_price
+            order_quantity = current_position[1] + floor(100 * signal.strength)
+            direction = 1 if signal.signal_type == 'LONG' else -1
+            order_info = tuple([order_type, order_price, order_quantity]) # 平现仓再开新仓           
+        
+        order_time = datetime.now() ##TODO
+        return tuple([order_time, symbol, order_info, direction])    
     
-    def update_signal(self, event):
+    def generate_order(self, event):
         if event.type == 'SIGNAL':
-            order_event = self.generate_order(event)
-            self.events.put(order_event)
+            order = self._naive_order_generator(event)
+            if order[3] != 0:
+                self.events.put(OrderEvent(order[0], order[1], order[2], order[3]))
+    
+
+    def _update_position_bar(self):
+        for symbol in self.symbol_list: # 更新current_position
+            new_bar = self.datahandler.get_latest_bars(symbol)[0] # tuple(symbol, datetime, close)
+            last_price = new_bar[2]
+            current_position = self.current_positions[symbol]
+            direction = current_position[0]
+            position = current_position[1]
+            market_value = last_price * direction * position
+            self.current_positions[symbol] = tuple([direction, position, market_value])
+        new_time = self.datahandler.get_latest_bars(self.symbol_list[0])[0][1]
+        self.all_positions[new_time] = self.current_positions
+    
+    def _update_capital_bar(self):
+        current_market_value = 0.0
+        current_cash = self.current_capital[1]
+        for symbol in self.symbol_list:
+            current_market_value += self.current_positions[symbol][2]
+        self.current_capital = tuple([current_market_value, current_cash])
+        new_time = self.datahandler.get_latest_bars(self.symbol_list[0])[0][1]
+        self.all_capital[new_time] = self.current_capital
+    
+    def update_bar(self):
+        self._update_position_bar()
+        self._update_capital_bar()
+
+    def _update_position_fill(self, fill): # datetime, symbol, order_info(price quantity), direction, commission=None
+        fill_time, fill_symbol,  fill_quantity, fill_direction, = fill.datetime, fill.symbol, fill.order_info[1], fill.direction
+        # self.current_positions{symbol: (direction, position, market_value), ... ,} 
+        current_position = self.current_positions[fill_symbol]
+        position = current_position[1] + fill_direction * fill_quantity
+        direction = 1 if position > 0 else -1
+        position = abs(position)
+        bar = self.datahandler.get_latest_bars(fill_symbol)[0] # tuple(symbol, datetime, close)
+        last_price = bar[2]
+        market_value = last_price * direction * position
+        self.current_positions[fill_symbol] = tuple([direction, position, market_value])
+        self.all_positions[fill_time] = self.current_positions
+
+    def _update_capital_fill(self, fill):
+        fill_time, fill_price, fill_quantity, fill_direction, fill_commission = fill.datetime, fill.order_info[0], fill.order_info[1], fill.direction, fill.calculate_commission()
+        fill_cost = fill_price * fill_quantity * fill_direction + fill_commission # 多头为正，空头为负
+        current_market_value = 0.0
+        current_cash = self.current_capital[1] - fill_cost
+        for symbol in self.symbol_list:
+            current_market_value += self.current_positions[symbol][2]
+        self.current_capital = tuple([current_market_value, current_cash])
+        self.all_capital[fill_time] = self.current_capital        
+        
+    
+    def update_fill(self, event):
+        if event.type == "FILL":
+            self._update_position_fill(event)
+            self._update_capital_fill(event)
+
 
     def create_equity_curve_dataframe(self):
-        curve = pd.DataFrame(self.all_holdings)
-        curve.set_index('datetime', inplace=True)
-        curve['return'] = curve['total'].pct_change()
-        curve['equity_curve'] = (1 + curve['return']).cumprod()
-        self.equity_curve = curve
+        capital_df = pd.DataFrame(self.all_capital).T
+        capital_df.columns = ['all_market_value', 'cash']
+        capital_df['returns'] = (capital_df['all_market_value'] + capital_df['cash']).pct_change().fillna(0)
+        capital_df['equity_curve'] = (1 + capital_df['returns']).cumprod()
+        self.capital_df = capital_df
     
     def output_summary_stats(self):
         '''
         计算Sharpe ratio & 最大回撤
         '''
-        total_return = self.equity_curve['equity_curve'][-1]
-        returns = self.equity_curve['returns']
-        pnl = self.equity_curve['equity_curve']
+        self.create_equity_curve_dataframe()
+        total_return = self.capital_df['equity_curve'][-1]
+        returns = self.capital_df['returns']
+        pnl = self.capital_df['equity_curve']
 
         sharpe_ratio = create_sharpe_ratio(returns)
         max_dd, dd_duration = create_drawdowns(pnl)

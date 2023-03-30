@@ -1,13 +1,14 @@
-import datetime
+from datetime import datetime
 from queue import Queue
 
 from abc import ABC, abstractmethod
 
-from Event_Driven_Backtester.Event import FillEvent, OrderEvent
+from Event_Driven_Backtester.Event import FillEvent
 
 class ExecutionHandler(ABC):
     '''
-    模拟broker的交易接口, 接受OrderEvent, 产生FillEvent
+    接收OrderEvent
+    产生FillEvent
     '''
     @abstractmethod
     def execute_order(self, event):
@@ -15,12 +16,25 @@ class ExecutionHandler(ABC):
     
 class SimulateExecutionHandler(ExecutionHandler):
     '''
-    order->fill 没有考虑延迟、滑点和成交比例等
+    order->fill 考虑延迟、滑点和成交比例
     '''
-    def __init__(self, events):
+    def __init__(self, datahandler, portfolio, events):
+        self.datahandler = datahandler
+        self.portfolio = portfolio
         self.events = events
-    
-    def execute_order(self, event):
+
+    def _match_order(self, order):
+        fill_time = datetime.now()
+        symbol = order.symbol
+        price = order.order_info[1]
+        quantity = order.order_info[2] # order_info = tuple([order_type, order_price, order_quantity])
+        direction = order.direction
+        return tuple([fill_time, symbol, tuple([price, quantity]), direction])
+
+    def execute_order(self, event): # datetime, symbol, order_info, direction, commission=None
         if event.type == 'ORDER':
-            fill_event = FillEvent(datetime.datetime.now(), event.symbol, 'SHFE', event.quantity, event.direction, None)
-            self.events.put(fill_event)
+            fill = self._match_order(event)
+            self.events.put(FillEvent(fill[0], fill[1], fill[2], fill[3]))
+    
+    def update_bar(self):
+        pass
